@@ -1,0 +1,49 @@
+global:
+  # FMS (2023): Reuters climate subsample from 2000-01-01; Greek pipeline uses the same calendar start.
+  start_date: '2000-01-01'
+  end_date: null
+paths:
+  database: articles.db
+  output_dir: output
+scraping:
+  # FMS (2023) Sec. 3.1 — verbatim English bigrams plus Greek equivalents of the same two phrases only.
+  seed_queries:
+  - climate change
+  - global warming
+  - κλιματική αλλαγή
+  - παγκόσμια υπερθέρμανση
+  user_agent: GreekClimateRiskResearchBot/1.0 (academic use)
+  min_delay_seconds: 1.0
+  max_delay_seconds: 2.0
+  request_timeout_seconds: 30.0
+  retries: 3
+preprocessing:
+  spacy_model: el_core_news_sm
+  # Corpus inclusion: identical rule to FMS (2023) Sec. 3.1 (either bigram; Greek = same two concepts).
+  filter_keywords:
+  - climate change
+  - global warming
+  - κλιματική αλλαγή
+  - παγκόσμια υπερθέρμανση
+  custom_stopwords:
+  - αγορά
+  - εταιρεία
+  - τράπεζα
+  - επενδυτής
+  - χρηματιστήριο
+  - ευρώ
+  - δισ
+  - εκ
+  min_document_frequency: 15
+  max_document_ratio: 0.5
+lda:
+  k_values:
+  - 5
+  - 10
+  - 15
+  - 20
+  - 25
+  - 30
+  random_state: 42
+  passes: 20
+  top_words_per_topic: 30

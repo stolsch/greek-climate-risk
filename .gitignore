@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+articles.db
+# Generated run artifacts only (repo root), not greek_climate_risk/output/ package
+/output/
