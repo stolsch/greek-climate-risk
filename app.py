@@ -179,13 +179,13 @@ def render_full_dashboard(project_root: Path, output_dir: Path, db_path: Path) -
                         "SELECT source, COUNT(*) AS n FROM articles GROUP BY source",
                         conn,
                     )
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(df, width="stretch")
                     all_articles = pd.read_sql_query(
                         "SELECT id, date, source, substr(title,1,80) AS title_preview, url FROM articles ORDER BY date DESC",
                         conn,
                     )
                 st.caption("All records")
-                st.dataframe(all_articles, use_container_width=True)
+                st.dataframe(all_articles, width="stretch")
             except Exception as exc:  # pylint: disable=broad-except
                 st.warning(f"Could not read the database: {exc}")
         else:
@@ -209,7 +209,7 @@ def render_full_dashboard(project_root: Path, output_dir: Path, db_path: Path) -
         ]:
             if path.is_file():
                 st.markdown(f"**{label}** (`{path.name}`)")
-                st.dataframe(pd.read_csv(path), use_container_width=True)
+                st.dataframe(pd.read_csv(path), width="stretch")
             else:
                 st.caption(f"Missing: {path.name}")
 
@@ -219,7 +219,7 @@ def render_full_dashboard(project_root: Path, output_dir: Path, db_path: Path) -
         if fd.is_file():
             dfd = pd.read_csv(fd)
             st.markdown("**Daily factor levels**")
-            st.dataframe(dfd, use_container_width=True)
+            st.dataframe(dfd, width="stretch")
             topic_cols = [c for c in dfd.columns if c.startswith("topic_")]
             if topic_cols:
                 st.line_chart(
@@ -232,7 +232,7 @@ def render_full_dashboard(project_root: Path, output_dir: Path, db_path: Path) -
 
         if fc.is_file():
             st.markdown("**Correlation matrix**")
-            st.dataframe(pd.read_csv(fc), use_container_width=True)
+            st.dataframe(pd.read_csv(fc), width="stretch")
 
     with tab5:
         for name in [
@@ -242,11 +242,11 @@ def render_full_dashboard(project_root: Path, output_dir: Path, db_path: Path) -
         ]:
             p = output_dir / name
             if p.is_file():
-                st.image(str(p), caption=name, use_container_width=True)
+                st.image(str(p), caption=name, width="stretch")
         wc = output_dir / "wordclouds"
         if wc.is_dir():
             for img in sorted(wc.glob("*.png")):
-                st.image(str(img), caption=img.name, use_container_width=True)
+                st.image(str(img), caption=img.name, width="stretch")
 
 
 def main() -> None:

@@ -106,6 +106,11 @@ def run_preprocessing(config: dict[str, Any], db_path: Path, output_dir: Path) -
         for row in rows
         if _contains_keywords_smart(f"{row[1]} {row[2]}", keywords, nlp)
     ]
+    if not filtered_rows:
+        LOGGER.warning(
+            "Keyword filtering retained zero rows; falling back to all scraped articles for preprocessing."
+        )
+        filtered_rows = rows
     LOGGER.info("Filtered articles retained: %s of %s", len(filtered_rows), len(rows))
 
     greek_stopwords = set(nlp.Defaults.stop_words)
@@ -127,6 +132,11 @@ def run_preprocessing(config: dict[str, Any], db_path: Path, output_dir: Path) -
             tokenized_docs.append(tokens)
             article_ids.append(article_id)
             dates.append(date)
+    if not tokenized_docs:
+        raise ValueError(
+            "Preprocessing produced no tokenized documents. "
+            "Check source article text quality or relax stopword filtering."
+        )
 
     document_frequency = Counter()
     for tokens in tokenized_docs:
@@ -168,6 +178,20 @@ def run_preprocessing(config: dict[str, Any], db_path: Path, output_dir: Path) -
         cleaned_docs.append(filtered_tokens)
         cleaned_article_ids.append(article_id)
         cleaned_dates.append(date)
+
+    if not cleaned_docs and tokenized_docs:
+        LOGGER.warning(
+            "Vocabulary filtering dropped all documents; applying emergency fallback thresholds."
+        )
+        emergency_vocab_terms = set(document_frequency.keys())
+        for tokens, article_id, date in zip(tokenized_docs, article_ids, dates):
+            filtered_tokens = [token for token in tokens if token in emergency_vocab_terms]
+            if not filtered_tokens:
+                continue
+            cleaned_docs.append(filtered_tokens)
+            cleaned_article_ids.append(article_id)
+            cleaned_dates.append(date)
+        vocab_terms = emergency_vocab_terms
 
     if not cleaned_docs:
         raise ValueError(
