@@ -180,12 +180,12 @@ def render_full_dashboard(project_root: Path, output_dir: Path, db_path: Path) -
                         conn,
                     )
                     st.dataframe(df, use_container_width=True)
-                    sample = pd.read_sql_query(
-                        "SELECT id, date, source, substr(title,1,80) AS title_preview, url FROM articles ORDER BY date DESC LIMIT 30",
+                    all_articles = pd.read_sql_query(
+                        "SELECT id, date, source, substr(title,1,80) AS title_preview, url FROM articles ORDER BY date DESC",
                         conn,
                     )
-                st.caption("Latest records (sample)")
-                st.dataframe(sample, use_container_width=True)
+                st.caption("All records")
+                st.dataframe(all_articles, use_container_width=True)
             except Exception as exc:  # pylint: disable=broad-except
                 st.warning(f"Could not read the database: {exc}")
         else:
@@ -209,7 +209,7 @@ def render_full_dashboard(project_root: Path, output_dir: Path, db_path: Path) -
         ]:
             if path.is_file():
                 st.markdown(f"**{label}** (`{path.name}`)")
-                st.dataframe(pd.read_csv(path).head(200), use_container_width=True)
+                st.dataframe(pd.read_csv(path), use_container_width=True)
             else:
                 st.caption(f"Missing: {path.name}")
 
@@ -218,8 +218,8 @@ def render_full_dashboard(project_root: Path, output_dir: Path, db_path: Path) -
         fc = output_dir / "factor_correlations.csv"
         if fd.is_file():
             dfd = pd.read_csv(fd)
-            st.markdown("**Daily factor levels** — sample")
-            st.dataframe(dfd.head(100), use_container_width=True)
+            st.markdown("**Daily factor levels**")
+            st.dataframe(dfd, use_container_width=True)
             topic_cols = [c for c in dfd.columns if c.startswith("topic_")]
             if topic_cols:
                 st.line_chart(

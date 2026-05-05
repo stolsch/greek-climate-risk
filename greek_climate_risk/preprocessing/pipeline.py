@@ -28,17 +28,45 @@ class CorpusArtifact:
     vocabulary: dict[str, int]
 
 
-def _fetch_articles(db_path: Path) -> list[tuple[int, str, str]]:
-    """Load id, body, date from DB."""
+def _fetch_articles(db_path: Path) -> list[tuple[int, str, str, str]]:
+    """Load id, title, body, date from DB."""
     with sqlite3.connect(db_path) as connection:
-        rows = connection.execute("SELECT id, body, date FROM articles ORDER BY date, id").fetchall()
-    return [(int(row[0]), str(row[1]), str(row[2])) for row in rows]
+        rows = connection.execute(
+            "SELECT id, title, body, date FROM articles ORDER BY date, id"
+        ).fetchall()
+    return [(int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
 
 
-def _contains_keywords(text: str, keywords: list[str]) -> bool:
-    """Filter condition for climate-related text."""
+def _keyword_lemma_tokens(keyword: str, nlp: Any) -> list[str]:
+    """Return alpha lemma tokens for one keyword expression."""
+    return [
+        token.lemma_.strip().lower()
+        for token in nlp(keyword.lower())
+        if token.is_alpha and token.lemma_.strip()
+    ]
+
+
+def _contains_lemma_phrase(doc_lemmas: list[str], phrase_lemmas: list[str]) -> bool:
+    """Check if a lemmatized phrase appears in document lemmas."""
+    if not phrase_lemmas:
+        return False
+    plen = len(phrase_lemmas)
+    if plen == 1:
+        return phrase_lemmas[0] in set(doc_lemmas)
+    return any(doc_lemmas[i : i + plen] == phrase_lemmas for i in range(len(doc_lemmas) - plen + 1))
+
+
+def _contains_keywords_smart(text: str, keywords: list[str], nlp: Any) -> bool:
+    """Match keywords by exact string or lemma phrase presence."""
     lowered = text.lower()
-    return any(keyword in lowered for keyword in keywords)
+    if any(keyword.lower() in lowered for keyword in keywords):
+        return True
+    doc_lemmas = [
+        token.lemma_.strip().lower()
+        for token in nlp(lowered)
+        if token.is_alpha and token.lemma_.strip()
+    ]
+    return any(_contains_lemma_phrase(doc_lemmas, _keyword_lemma_tokens(keyword, nlp)) for keyword in keywords)
 
 
 def _load_spacy_model(model_name: str):
@@ -70,12 +98,16 @@ def _load_spacy_model(model_name: str):
 def run_preprocessing(config: dict[str, Any], db_path: Path, output_dir: Path) -> CorpusArtifact:
     """Build cleaned corpus and save `corpus.pkl` artifact."""
     preprocess_cfg = config["preprocessing"]
+    nlp = _load_spacy_model(preprocess_cfg["spacy_model"])
     rows = _fetch_articles(db_path)
     keywords = preprocess_cfg["filter_keywords"]
-    filtered_rows = [row for row in rows if _contains_keywords(row[1], keywords)]
+    filtered_rows = [
+        row
+        for row in rows
+        if _contains_keywords_smart(f"{row[1]} {row[2]}", keywords, nlp)
+    ]
     LOGGER.info("Filtered articles retained: %s of %s", len(filtered_rows), len(rows))
 
-    nlp = _load_spacy_model(preprocess_cfg["spacy_model"])
     greek_stopwords = set(nlp.Defaults.stop_words)
     custom_stopwords = set(preprocess_cfg["custom_stopwords"])
     stopwords = greek_stopwords | custom_stopwords
@@ -84,7 +116,7 @@ def run_preprocessing(config: dict[str, Any], db_path: Path, output_dir: Path) -
     article_ids: list[int] = []
     dates: list[str] = []
 
-    for article_id, text, date in filtered_rows:
+    for article_id, _title, text, date in filtered_rows:
         doc = nlp(text.lower())
         tokens = [
             token.lemma_.strip()

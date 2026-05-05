@@ -28,6 +28,8 @@ async def _run_async_scraping(config: dict[str, Any]) -> list[dict[str, Any]]:
             max_delay_seconds=scraper_cfg["max_delay_seconds"],
             request_timeout_seconds=scraper_cfg["request_timeout_seconds"],
             retries=scraper_cfg["retries"],
+            max_search_pages_per_term=int(scraper_cfg.get("max_search_pages_per_term", 25)),
+            block_cooldown_seconds=float(scraper_cfg.get("block_cooldown_seconds", 120.0)),
         )
         for source in SOURCES
     ]

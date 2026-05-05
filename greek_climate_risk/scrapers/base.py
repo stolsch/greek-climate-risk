@@ -7,7 +7,7 @@ import logging
 import random
 from datetime import datetime
 from typing import Any
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import parse_qsl, quote_plus, urlencode, urljoin, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
 
 import httpx
@@ -29,12 +29,16 @@ class AsyncArticleScraper:
         max_delay_seconds: float,
         request_timeout_seconds: float,
         retries: int,
+        max_search_pages_per_term: int,
+        block_cooldown_seconds: float,
     ) -> None:
         """Initialize scraper settings and robot rules."""
         self.source = source
         self.retries = retries
         self.min_delay_seconds = min_delay_seconds
         self.max_delay_seconds = max_delay_seconds
+        self.max_search_pages_per_term = max(1, int(max_search_pages_per_term))
+        self.block_cooldown_seconds = float(block_cooldown_seconds)
         self.client = httpx.AsyncClient(
             timeout=request_timeout_seconds,
             headers={"User-Agent": user_agent},
@@ -60,6 +64,13 @@ class AsyncArticleScraper:
         path = urlparse(url).path or "/"
         return self.robot_parser.can_fetch("*", path)
 
+    async def _adaptive_backoff(self, attempt: int, retry_after: float | None = None) -> None:
+        """Sleep with increasing cooldown after transient failures."""
+        base = random.uniform(self.min_delay_seconds, self.max_delay_seconds)
+        exp = min(60.0, base * (2 ** max(0, attempt - 1)))
+        wait_for = max(exp, retry_after or 0.0)
+        await asyncio.sleep(wait_for)
+
     async def _fetch(self, url: str) -> str | None:
         """Fetch URL with retries and graceful error handling."""
         if not self._is_allowed(url):
@@ -68,6 +79,18 @@ class AsyncArticleScraper:
         for attempt in range(1, self.retries + 1):
             try:
                 response = await self.client.get(url)
+                if response.status_code in (429, 403, 503):
+                    retry_after_raw = response.headers.get("Retry-After")
+                    retry_after = float(retry_after_raw) if retry_after_raw and retry_after_raw.isdigit() else None
+                    LOGGER.warning(
+                        "Possible anti-bot block (%s) for %s (attempt %s/%s). Cooling down.",
+                        response.status_code,
+                        url,
+                        attempt,
+                        self.retries,
+                    )
+                    await self._adaptive_backoff(attempt, retry_after=retry_after)
+                    continue
                 response.raise_for_status()
                 await self._delay()
                 return response.text
@@ -79,8 +102,38 @@ class AsyncArticleScraper:
                     self.retries,
                     exc,
                 )
-                await self._delay()
+                await self._adaptive_backoff(attempt)
+        LOGGER.warning("Retries exhausted for %s; entering cooldown of %.1fs.", url, self.block_cooldown_seconds)
+        await asyncio.sleep(self.block_cooldown_seconds)
         return None
+
+    @staticmethod
+    def _set_query_param(url: str, key: str, value: int) -> str:
+        """Return URL with one query parameter replaced/inserted."""
+        parsed = urlparse(url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query[key] = str(value)
+        return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+    def _candidate_search_urls(self, base_search_url: str, page_number: int) -> list[str]:
+        """Generate likely paginated search URLs for one result page."""
+        if page_number <= 1:
+            return [base_search_url]
+        return [
+            self._set_query_param(base_search_url, "page", page_number),
+            self._set_query_param(base_search_url, "paged", page_number),
+            self._set_query_param(base_search_url, "pagenum", page_number),
+        ]
+
+    def _extract_next_search_pages(self, soup: BeautifulSoup) -> list[str]:
+        """Extract explicit next-page links from search results page."""
+        next_urls: list[str] = []
+        for selector in ("a[rel='next']", "a.next", ".next a", "a[aria-label*='Next']"):
+            for anchor in soup.select(selector):
+                href = anchor.get("href")
+                if href:
+                    next_urls.append(urljoin(self.source.base_url, href))
+        return next_urls
 
     async def scrape(self, search_terms: list[str], start_date: datetime) -> list[dict[str, Any]]:
         """Scrape all candidate articles matching source query and date window."""
@@ -88,16 +141,35 @@ class AsyncArticleScraper:
         links: set[str] = set()
         for term in search_terms:
             encoded = quote_plus(term)
-            search_url = self.source.search_url_template.format(query=encoded)
-            html = await self._fetch(search_url)
-            if not html:
-                continue
-            soup = BeautifulSoup(html, "html.parser")
-            for anchor in soup.select(self.source.article_link_selector):
-                href = anchor.get("href")
-                if not href:
+            base_search_url = self.source.search_url_template.format(query=encoded)
+            visited_search_urls: set[str] = set()
+            pending_search_urls: list[str] = [base_search_url]
+            pages_processed = 0
+
+            while pending_search_urls and pages_processed < self.max_search_pages_per_term:
+                search_url = pending_search_urls.pop(0)
+                if search_url in visited_search_urls:
                     continue
-                links.add(urljoin(self.source.base_url, href))
+                visited_search_urls.add(search_url)
+
+                html = await self._fetch(search_url)
+                if not html:
+                    continue
+                pages_processed += 1
+                soup = BeautifulSoup(html, "html.parser")
+                for anchor in soup.select(self.source.article_link_selector):
+                    href = anchor.get("href")
+                    if not href:
+                        continue
+                    links.add(urljoin(self.source.base_url, href))
+
+                page_number = pages_processed + 1
+                for candidate in self._candidate_search_urls(base_search_url, page_number):
+                    if candidate not in visited_search_urls and candidate not in pending_search_urls:
+                        pending_search_urls.append(candidate)
+                for next_url in self._extract_next_search_pages(soup):
+                    if next_url not in visited_search_urls and next_url not in pending_search_urls:
+                        pending_search_urls.append(next_url)
 
         parsed_articles: list[dict[str, Any]] = []
         for link in sorted(links):
