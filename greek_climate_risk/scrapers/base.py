@@ -31,6 +31,8 @@ class AsyncArticleScraper:
         retries: int,
         max_search_pages_per_term: int,
         block_cooldown_seconds: float,
+        search_concurrency: int,
+        article_concurrency: int,
     ) -> None:
         """Initialize scraper settings and robot rules."""
         self.source = source
@@ -39,6 +41,8 @@ class AsyncArticleScraper:
         self.max_delay_seconds = max_delay_seconds
         self.max_search_pages_per_term = max(1, int(max_search_pages_per_term))
         self.block_cooldown_seconds = float(block_cooldown_seconds)
+        self.search_concurrency = max(1, int(search_concurrency))
+        self.article_concurrency = max(1, int(article_concurrency))
         self.client = httpx.AsyncClient(
             timeout=request_timeout_seconds,
             headers={"User-Agent": user_agent},
@@ -135,6 +139,20 @@ class AsyncArticleScraper:
                     next_urls.append(urljoin(self.source.base_url, href))
         return next_urls
 
+    async def _collect_links_for_search_page(self, search_url: str) -> tuple[set[str], list[str]]:
+        """Fetch one search page and return article links plus next-page candidates."""
+        html = await self._fetch(search_url)
+        if not html:
+            return set(), []
+        soup = BeautifulSoup(html, "html.parser")
+        page_links: set[str] = set()
+        for anchor in soup.select(self.source.article_link_selector):
+            href = anchor.get("href")
+            if not href:
+                continue
+            page_links.add(urljoin(self.source.base_url, href))
+        return page_links, self._extract_next_search_pages(soup)
+
     async def scrape(self, search_terms: list[str], start_date: datetime) -> list[dict[str, Any]]:
         """Scrape all candidate articles matching source query and date window."""
         await self._load_robots()
@@ -147,36 +165,44 @@ class AsyncArticleScraper:
             pages_processed = 0
 
             while pending_search_urls and pages_processed < self.max_search_pages_per_term:
-                search_url = pending_search_urls.pop(0)
-                if search_url in visited_search_urls:
-                    continue
-                visited_search_urls.add(search_url)
-
-                html = await self._fetch(search_url)
-                if not html:
-                    continue
-                pages_processed += 1
-                soup = BeautifulSoup(html, "html.parser")
-                for anchor in soup.select(self.source.article_link_selector):
-                    href = anchor.get("href")
-                    if not href:
+                batch: list[str] = []
+                while pending_search_urls and len(batch) < self.search_concurrency:
+                    candidate = pending_search_urls.pop(0)
+                    if candidate in visited_search_urls:
                         continue
-                    links.add(urljoin(self.source.base_url, href))
-
-                page_number = pages_processed + 1
-                for candidate in self._candidate_search_urls(base_search_url, page_number):
-                    if candidate not in visited_search_urls and candidate not in pending_search_urls:
-                        pending_search_urls.append(candidate)
-                for next_url in self._extract_next_search_pages(soup):
-                    if next_url not in visited_search_urls and next_url not in pending_search_urls:
-                        pending_search_urls.append(next_url)
+                    visited_search_urls.add(candidate)
+                    batch.append(candidate)
+                if not batch:
+                    continue
+                page_results = await asyncio.gather(
+                    *(self._collect_links_for_search_page(url) for url in batch)
+                )
+                for page_links, discovered_next_urls in page_results:
+                    if pages_processed >= self.max_search_pages_per_term:
+                        break
+                    pages_processed += 1
+                    links.update(page_links)
+                    page_number = pages_processed + 1
+                    for candidate in self._candidate_search_urls(base_search_url, page_number):
+                        if candidate not in visited_search_urls and candidate not in pending_search_urls:
+                            pending_search_urls.append(candidate)
+                    for next_url in discovered_next_urls:
+                        if next_url not in visited_search_urls and next_url not in pending_search_urls:
+                            pending_search_urls.append(next_url)
 
         parsed_articles: list[dict[str, Any]] = []
-        for link in sorted(links):
-            article = await self._parse_article(link)
+        parse_semaphore = asyncio.Semaphore(self.article_concurrency)
+
+        async def _parse_with_limit(link: str) -> dict[str, Any] | None:
+            async with parse_semaphore:
+                return await self._parse_article(link)
+
+        parsed_batch = await asyncio.gather(*(_parse_with_limit(link) for link in sorted(links)))
+        min_date_iso = start_date.date().isoformat()
+        for article in parsed_batch:
             if not article:
                 continue
-            if article["date"] < start_date.date().isoformat():
+            if article["date"] < min_date_iso:
                 continue
             parsed_articles.append(article)
         LOGGER.info("%s scraped %s articles", self.source.name, len(parsed_articles))

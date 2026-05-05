@@ -13,12 +13,14 @@ scraping:
   - κλιματική αλλαγή
   - παγκόσμια υπερθέρμανση
   user_agent: GreekClimateRiskResearchBot/1.0 (academic use)
-  min_delay_seconds: 1.5
-  max_delay_seconds: 3.5
+  min_delay_seconds: 0.2
+  max_delay_seconds: 0.8
   request_timeout_seconds: 30.0
   retries: 5
   max_search_pages_per_term: 25
   block_cooldown_seconds: 120.0
+  search_concurrency: 4
+  article_concurrency: 12
 preprocessing:
   spacy_model: el_core_news_sm
   # Corpus inclusion: identical rule to FMS (2023) Sec. 3.1 (either bigram; Greek = same two concepts).
